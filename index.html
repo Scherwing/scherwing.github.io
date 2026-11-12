@@ -37,11 +37,17 @@
 
       <section id="results" hidden>
         <div class="tabs" role="tablist"></div>
-        <div id="fairness" hidden>
+        <div id="transfers" class="weight">
+          <label>Prefer direct trips <output id="penalty-out">+5 min per change</output>
+            <input id="penalty" type="range" min="0" max="15" step="1" value="5">
+          </label>
+          <p class="hint">Each change counts as this many extra minutes, so a slightly slower direct train can win.</p>
+        </div>
+        <div id="fairness" class="weight" hidden>
           <label>Fairness weight <output id="lambda-out">2</output>
             <input id="lambda" type="range" min="0" max="5" step="0.5" value="2">
           </label>
-          <p class="hint">Score = total minutes + weight × (longest trip − shortest trip). 0 is the same as "fastest total".</p>
+          <p class="hint">Score = total + weight × (longest trip − shortest trip), with changes counted as extra minutes. 0 is the same as "fastest total".</p>
         </div>
         <ol id="result-list"></ol>
         <button id="share" class="ghost" type="button">Copy share link</button>

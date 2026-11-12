@@ -1,5 +1,5 @@
-import { geocode, nearestStopName, reachableFrom, journeyMinutes } from './api.js';
-import { buildCandidates, rank, refinementSet, MODES } from './scoring.js';
+import { geocode, nearestStopName, reachableFrom, journeyOptions } from './api.js';
+import { buildCandidates, rank, refinementSet, mergeExact, MODES, TRANSFER_LEVELS } from './scoring.js';
 
 const COLORS = ['#e6194b', '#3c78d8', '#2e9e5b', '#f08c00', '#8e44ad', '#00a3a3', '#d63384', '#795548'];
 const MAX_PEOPLE = 8;
@@ -16,7 +16,8 @@ let nextId = 1;
 let placingId = null;
 let mode = 'total';
 let lambda = 2;
-let result = null;        // { people: snapshot, cands, whenISO }
+let penalty = 5;          // minutes each transfer "costs"
+let result = null;       // { people: snapshot, cands, whenISO }
 let selectedKey = null;
 let runId = 0;
 let stale = false;
@@ -259,13 +260,23 @@ function toLocalInput(d) {
 $('#add-person').addEventListener('click', () => { addPerson(); saveHash(); });
 $('#go').addEventListener('click', run);
 
-let lambdaTimer;
+let weightTimer;
+const onWeightChange = () => {
+  renderResults();
+  saveHash();
+  clearTimeout(weightTimer);
+  weightTimer = setTimeout(() => result && refine(runId), 500);
+};
 $('#lambda').addEventListener('input', (e) => {
   lambda = Number(e.target.value);
   $('#lambda-out').textContent = lambda;
-  renderResults();
-  clearTimeout(lambdaTimer);
-  lambdaTimer = setTimeout(() => result && refine(runId), 500);
+  onWeightChange();
+});
+const penaltyText = (v) => (v === 0 ? 'off' : `+${v} min per change`);
+$('#penalty').addEventListener('input', (e) => {
+  penalty = Number(e.target.value);
+  $('#penalty-out').textContent = penaltyText(penalty);
+  onWeightChange();
 });
 
 $('#share').addEventListener('click', async () => {
@@ -308,13 +319,20 @@ async function run() {
   $('#go').disabled = true;
   stale = false;
   let done = 0;
-  setStatus(`Mapping where everyone can get to… (0/${ps.length})`, { progress: 0 });
+  const calls = ps.length * TRANSFER_LEVELS.length;
+  setStatus('Mapping where everyone can get to…', { progress: 0 });
   try {
-    const reach = await Promise.all(ps.map((p) => reachableFrom(p, whenISO).then((r) => {
-      done++;
-      if (my === runId) setStatus(`Mapping where everyone can get to… (${done}/${ps.length})`, { progress: done / ps.length });
-      return r;
-    })));
+    // One isochrone per person per max-transfer level (0, 1, 2, 3): tells us, for every
+    // station, how fast each person gets there directly, with one change, etc.
+    const reach = await Promise.all(ps.map(async (p) => {
+      const levels = {};
+      await Promise.all(TRANSFER_LEVELS.map(async (lvl) => {
+        levels[lvl] = await reachableFrom(p, whenISO, { maxTransfers: lvl });
+        done++;
+        if (my === runId) setStatus('Mapping where everyone can get to…', { progress: done / calls });
+      }));
+      return levels;
+    }));
     if (my !== runId) return;
     const cands = buildCandidates(reach, opts);
     if (!cands.length) {
@@ -340,7 +358,7 @@ async function refine(my) {
   if (!result) return;
   const { cands, people: ps, whenISO } = result;
   const todo = [];
-  for (const c of refinementSet(cands, lambda, REFINE_TOP)) {
+  for (const c of refinementSet(cands, lambda, penalty, REFINE_TOP)) {
     ps.forEach((p, i) => { if (!c.exact[i]) todo.push({ c, i, p }); });
   }
   if (!todo.length) { if (!stale) setStatus(doneText()); return; }
@@ -354,8 +372,8 @@ async function refine(my) {
     }
   };
   tick();
-  await Promise.all(todo.map(({ c, i, p }) => journeyMinutes(p, c.id, whenISO)
-    .then((m) => { if (m != null) { c.times[i] = m; c.exact[i] = true; } else failed++; })
+  await Promise.all(todo.map(({ c, i, p }) => journeyOptions(p, c.id, whenISO)
+    .then((o) => { if (o) { c.opts[i] = mergeExact(c.opts[i], o); c.exact[i] = true; } else failed++; })
     .catch(() => { failed++; })
     .finally(() => { done++; tick(); })));
   if (my !== runId) return;
@@ -396,8 +414,9 @@ function renderResults() {
   if (!result) return;
   renderTabs();
   const { people: ps, whenISO } = result;
-  const ranked = rank(result.cands, mode, lambda).slice(0, SHOW_RESULTS);
-  const maxT = Math.max(...ranked.flatMap((c) => c.times));
+  const ranked = rank(result.cands, mode, lambda, penalty).slice(0, SHOW_RESULTS);
+  const maxT = Math.max(...ranked.flatMap((c) => c.stats.minutes));
+  const changes = (n) => (n === 0 ? 'direct' : n === 1 ? '1 change' : `${n} changes`);
   if (!selectedKey || !ranked.some((c) => c.key === selectedKey)) selectedKey = ranked[0]?.key;
 
   const list = $('#result-list');
@@ -405,9 +424,10 @@ function renderResults() {
   ranked.forEach((c, idx) => {
     const s = c.stats;
     const allExact = c.exact.every(Boolean);
-    const headline = mode === 'total' ? `${s.total} min total`
+    const headline = mode === 'total' ? `${s.totalMinutes} min total`
       : mode === 'balanced' ? `score ${Math.round(s.balanced)}`
-      : `≤ ${s.max} min`;
+      : `≤ ${s.maxMinutes} min`;
+    const t = s.minutes;
     const li = document.createElement('li');
     li.className = 'result' + (c.key === selectedKey ? ' selected' : '');
     li.innerHTML = `
@@ -416,13 +436,14 @@ function renderResults() {
         <span class="name">${esc(c.name)} ${lineBadges(c.p)}</span>
         <span class="score">${headline}</span>
       </div>
-      <div class="meta">total ${s.total} · avg ${Math.round(s.avg)} · longest ${s.max} · spread ${s.spread} min
+      <div class="meta">${s.totalMinutes} min · ${s.totalTransfers === 0 ? 'all direct' : changes(s.totalTransfers)} · longest ${s.maxMinutes} min${penalty ? ` · score ${Math.round(mode === 'balanced' ? s.balanced : s.total)}` : ''}
         <span class="badge ${allExact ? 'exact' : ''}">${allExact ? 'exact' : 'estimate'}</span></div>
       <div class="bars">${ps.map((p, i) => `
         <div class="bar">
           <span class="who">${esc(personName(p, i))}</span>
-          <span class="track"><span class="fill" style="display:block;width:${(c.times[i] / maxT) * 100}%;background:${p.color}"></span></span>
-          <span class="min">${c.times[i]}′${c.exact[i] ? '' : '*'}</span>
+          <span class="track"><span class="fill" style="display:block;width:${(t[i] / maxT) * 100}%;background:${p.color}"></span></span>
+          <span class="min">${t[i]}′${c.exact[i] ? '' : '*'}</span>
+          <span class="tr ${s.transfers[i] === 0 ? 'direct' : ''}">${s.transfers[i] === 0 ? 'direct' : `${s.transfers[i]}×`}</span>
         </div>`).join('')}
       </div>
       ${c.key === selectedKey ? `<div class="routes">Routes: ${ps.map((p, i) => `<a href="${gmaps(p, c, whenISO)}" target="_blank" rel="noopener">${esc(personName(p, i))}</a>`).join('')}</div>` : ''}`;
@@ -447,14 +468,14 @@ function drawStations(ranked) {
       icon: L.divIcon({ className: '', iconSize: best ? [30, 30] : [24, 24], html: `<div class="station-mark ${best ? 'best' : ''}">${idx + 1}</div>` }),
       zIndexOffset: best ? 1000 : 500 - idx,
     }).addTo(stationLayer);
-    m.bindTooltip(`${esc(c.name)}: ${c.stats.total} min total, longest ${c.stats.max}`);
+    m.bindTooltip(`${esc(c.name)}: ${c.stats.totalMinutes} min total, longest ${c.stats.maxMinutes}, ${c.stats.totalTransfers} changes`);
     m.on('click', () => { selectedKey = c.key; renderResults(); });
   });
   const sel = ranked.find((c) => c.key === selectedKey);
   if (sel) {
     result.people.forEach((p, i) => {
       L.polyline([[p.lat, p.lon], [sel.lat, sel.lon]], { color: p.color, weight: 3, opacity: 0.8, dashArray: '6 6' })
-        .bindTooltip(`${esc(personName(p, i))}: ${sel.times[i]} min`)
+        .bindTooltip(`${esc(personName(p, i))}: ${sel.stats.minutes[i]} min, ${sel.stats.transfers[i] === 0 ? 'direct' : `${sel.stats.transfers[i]}× change`}`)
         .addTo(routeLayer);
     });
   }
@@ -478,6 +499,8 @@ function saveHash() {
   if ($('#tram').checked) h.set('tram', '1');
   if ($('#regional').checked) h.set('re', '1');
   if (mode !== 'total') h.set('m', mode);
+  if (penalty !== 5) h.set('x', penalty);
+  if (lambda !== 2) h.set('l', lambda);
   history.replaceState(null, '', '#' + h.toString());
 }
 
@@ -491,6 +514,13 @@ function loadHash() {
   $('#tram').checked = h.get('tram') === '1';
   $('#regional').checked = h.get('re') === '1';
   if (MODES[h.get('m')]) mode = h.get('m');
+  const num = (k, lo, hi) => { const v = Number(h.get(k)); return h.has(k) && v >= lo && v <= hi ? v : null; };
+  penalty = num('x', 0, 15) ?? penalty;
+  lambda = num('l', 0, 5) ?? lambda;
+  $('#penalty').value = penalty;
+  $('#penalty-out').textContent = penaltyText(penalty);
+  $('#lambda').value = lambda;
+  $('#lambda-out').textContent = lambda;
   return people.length;
 }
 

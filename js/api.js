@@ -128,12 +128,12 @@ export async function nearestStopName(lat, lon) {
  * Every rail/tram station reachable from a point (isochrone).
  * Returns [{id, name, lat, lon, p: {s,u,t,r}, m: minutes}]
  */
-export async function reachableFrom({ lat, lon, label }, whenISO, maxDuration = 90) {
-  const key = `reach:${r5(lat)},${r5(lon)}:${whenISO}:${maxDuration}`;
+export async function reachableFrom({ lat, lon, label }, whenISO, { maxDuration = 90, maxTransfers = 3 } = {}) {
+  const key = `reach:${r5(lat)},${r5(lon)}:${whenISO}:${maxDuration}:${maxTransfers}`;
   return cached(key, {}, async () => {
     const data = await fetchJSON('/stops/reachable-from', {
       latitude: lat, longitude: lon, address: label || 'Start',
-      maxDuration, maxTransfers: 3, when: whenISO,
+      maxDuration, maxTransfers, when: whenISO,
     }, { timeout: 60000 });
     const out = [];
     for (const group of data.reachable || []) {
@@ -154,26 +154,29 @@ export async function reachableFrom({ lat, lon, label }, whenISO, maxDuration = 
 }
 
 /**
- * Exact door-to-station travel time in minutes (best of the next few journeys,
- * measured from first departure to arrival, so waiting at home doesn't count).
+ * Exact door-to-station options from the next few journeys: { transfers: minutes }.
+ * Minutes are measured from first departure to arrival, so waiting at home doesn't count.
+ * Returns null if no journey was found.
  */
-export async function journeyMinutes({ lat, lon, label }, stopId, whenISO) {
-  const key = `jny:${r5(lat)},${r5(lon)}:${stopId}:${whenISO}`;
+export async function journeyOptions({ lat, lon, label }, stopId, whenISO) {
+  const key = `jny2:${r5(lat)},${r5(lon)}:${stopId}:${whenISO}`;
   return cached(key, {}, async () => {
     const data = await fetchJSON('/journeys', {
       'from.latitude': lat, 'from.longitude': lon, 'from.address': label || 'Start',
-      to: stopId, departure: whenISO, results: 4,
+      to: stopId, departure: whenISO, results: 6,
       stopovers: false, remarks: false, scheduledDays: false,
     });
-    let best = null;
+    const opts = {};
     for (const j of data.journeys || []) {
       const legs = j.legs;
       const dep = new Date(legs[0].plannedDeparture || legs[0].departure);
       const arr = new Date(legs.at(-1).plannedArrival || legs.at(-1).arrival);
       const mins = Math.round((arr - dep) / 60000);
-      if (best === null || mins < best) best = mins;
+      const rides = legs.filter((l) => !l.walking).length;
+      const tr = Math.max(0, rides - 1);
+      if (opts[tr] === undefined || mins < opts[tr]) opts[tr] = mins;
     }
-    return best;
+    return Object.keys(opts).length ? opts : null;
   });
 }
 
