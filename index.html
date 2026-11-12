@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Berlin Meetup Finder</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="panel">
+      <header>
+        <h1>Treffpunkt Berlin</h1>
+        <p class="sub">Find the station that works for everyone by public transport.</p>
+      </header>
+
+      <section>
+        <div class="section-head">
+          <h2>People</h2>
+          <button id="add-person" class="ghost" type="button">+ Add person</button>
+        </div>
+        <ul id="people"></ul>
+        <p class="hint">Type an address or click the map to drop a pin. You can drag pins.</p>
+      </section>
+
+      <section class="options">
+        <label>Leaving at
+          <input id="when" type="datetime-local">
+        </label>
+        <label class="check"><input id="tram" type="checkbox"> Include tram stops</label>
+        <label class="check"><input id="regional" type="checkbox"> Include regional-only stations</label>
+      </section>
+
+      <button id="go" class="primary" type="button">Find meeting point</button>
+      <div id="status" role="status"></div>
+
+      <section id="results" hidden>
+        <div class="tabs" role="tablist"></div>
+        <div id="fairness" hidden>
+          <label>Fairness weight <output id="lambda-out">2</output>
+            <input id="lambda" type="range" min="0" max="5" step="0.5" value="2">
+          </label>
+          <p class="hint">Score = total minutes + weight × (longest trip − shortest trip). 0 is the same as "fastest total".</p>
+        </div>
+        <ol id="result-list"></ol>
+        <button id="share" class="ghost" type="button">Copy share link</button>
+      </section>
+
+      <footer>Travel data: <a href="https://v6.bvg.transport.rest" target="_blank" rel="noopener">BVG via transport.rest</a> · Map © OpenStreetMap</footer>
+    </aside>
+    <main id="map"></main>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
